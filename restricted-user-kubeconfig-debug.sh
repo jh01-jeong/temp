@@ -39,14 +39,30 @@ log_info "Cluster Role Name: ${CLUSTER_ROLE_NAME}"
 log_info "Cluster Role Binding Name: ${CLUSTER_ROLE_BINDING_NAME}"
 log_info "Kubeconfig File: ${KUBECONFIG_FILE}"
 
-# 1. Create Service Account
+# 1. Delete existing Service Account if it exists
+log_info "Deleting existing Service Account if it exists..."
+kubectl delete serviceaccount ${SERVICE_ACCOUNT_NAME} -n ${NAMESPACE} --ignore-not-found
+
+# 2. Delete existing ClusterRole if it exists
+log_info "Deleting existing ClusterRole if it exists..."
+kubectl delete clusterrole ${CLUSTER_ROLE_NAME} --ignore-not-found
+
+# 3. Delete existing ClusterRoleBinding if it exists
+log_info "Deleting existing ClusterRoleBinding if it exists..."
+kubectl delete clusterrolebinding ${CLUSTER_ROLE_BINDING_NAME} --ignore-not-found
+
+# 4. Delete existing Secret if it exists
+log_info "Deleting existing Secret if it exists..."
+kubectl delete secret ${SERVICE_ACCOUNT_NAME}-token -n ${NAMESPACE} --ignore-not-found
+
+# 5. Create Service Account
 log_info "Creating Service Account..."
 if ! kubectl create serviceaccount ${SERVICE_ACCOUNT_NAME} -n ${NAMESPACE}; then
     log_error "Failed to create Service Account: ${SERVICE_ACCOUNT_NAME} in namespace: ${NAMESPACE}"
     exit 1
 fi
 
-# 2. Create ClusterRole based on permission type (admin or read-only)
+# 6. Create ClusterRole based on permission type (admin or read-only)
 if [ "${PERMISSION_TYPE}" == "admin" ]; then
     log_info "Assigning admin permissions..."
     cat <<EOF | kubectl apply -f -
@@ -81,7 +97,7 @@ EOF
     fi
 fi
 
-# 3. Bind the ClusterRole to the Service Account
+# 7. Bind the ClusterRole to the Service Account
 log_info "Creating ClusterRoleBinding..."
 cat <<EOF | kubectl apply -f -
 apiVersion: rbac.authorization.k8s.io/v1
@@ -102,7 +118,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 4. Manually create a Secret for the Service Account
+# 8. Manually create a Secret for the Service Account
 log_info "Creating Secret for Service Account..."
 kubectl apply -f - <<EOF
 apiVersion: v1
@@ -119,7 +135,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 5. Wait for the Secret to be created and fetch the Service Account Token
+# 9. Wait for the Secret to be created and fetch the Service Account Token
 log_info "Fetching Service Account Token..."
 SECRET_NAME="${SERVICE_ACCOUNT_NAME}-token"
 USER_TOKEN=""
@@ -134,17 +150,22 @@ while [ -z "${USER_TOKEN}" ]; do
 done
 log_info "User Token: ${USER_TOKEN}"
 
-# 6. Get Minikube CA certificate
-log_info "Fetching Minikube CA certificate..."
-CA_CRT_PATH=$(minikube kubectl -- config view --raw -o jsonpath="{.clusters[0].cluster.certificate-authority}")
-CLUSTER_CA=$(cat ${CA_CRT_PATH} | base64 | tr -d '\n')
-if [ $? -ne 0 ]; then
-    log_error "Failed to fetch CA certificate."
-    exit 1
+# 10. Get the CA certificate using kubectl (either from certificate-authority-data or certificate-authority)
+log_info "Fetching Kubernetes CA certificate..."
+CLUSTER_CA=$(kubectl config view --raw -o jsonpath="{.clusters[0].cluster.certificate-authority-data}")
+if [ -z "${CLUSTER_CA}" ]; then
+    log_info "certificate-authority-data is empty, attempting to fetch certificate-authority file."
+    CA_PATH=$(kubectl config view --raw -o jsonpath="{.clusters[0].cluster.certificate-authority}")
+    if [ -f "${CA_PATH}" ]; then
+        CLUSTER_CA=$(cat ${CA_PATH} | base64 | tr -d '\n')
+    else
+        log_error "Failed to fetch CA certificate from file path: ${CA_PATH}"
+        exit 1
+    fi
 fi
 log_info "CA certificate fetched successfully."
 
-# 7. Fetch Kubernetes API server information
+# 11. Fetch Kubernetes API server information
 log_info "Fetching Kubernetes API server information..."
 CLUSTER_NAME=$(kubectl config view --minify -o jsonpath="{.clusters[0].name}")
 CLUSTER_SERVER=$(kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}")
@@ -158,7 +179,7 @@ log_info "Cluster Name: ${CLUSTER_NAME}"
 log_info "Cluster Server: ${CLUSTER_SERVER}"
 log_info "Cluster CA: ${CLUSTER_CA}"
 
-# 8. Manually create kubeconfig file
+# 12. Manually create kubeconfig file
 log_info "Creating kubeconfig file..."
 cat <<EOF > ${KUBECONFIG_FILE}
 apiVersion: v1
@@ -188,7 +209,7 @@ fi
 
 log_info "kubeconfig file created at ${KUBECONFIG_FILE}"
 
-# 9. Validate permissions with the new kubeconfig
+# 13. Validate permissions with the new kubeconfig
 log_info "Validating permissions..."
 kubectl auth can-i get pods --kubeconfig=${KUBECONFIG_FILE}
 if [ $? -ne 0 ]; then
